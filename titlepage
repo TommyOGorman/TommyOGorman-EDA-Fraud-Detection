@@ -1,0 +1,13 @@
+\thispagestyle{empty}
+\begin{center}
+  \vspace*{2cm}
+  \includegraphics[width=0.3\textwidth]{TUS_Logo.png}\\[2em]
+  \LARGE \textbf{Exploratory Data Analysis: Fraud Detection}\\[4em]
+  \large
+  \textbf{Tommy O'Gorman} \\[0.5em]
+  \textbf{Student ID:} K00301970 \\[0.5em]
+  \textbf{Lecturer:} Dr Eric McNamara \\[0.5em]
+  \textbf{Word Count:} 3956 \\[0.5em]
+  \textbf{Date:} April 17, 2025
+\end{center}
+\newpage

@@ -1,0 +1,920 @@
+---
+title: ""
+author: ""
+date: ""
+format:
+  pdf:
+    toc: true
+    number-sections: true
+    include-in-header: header.tex
+    include-before-body: titlepage.tex
+    documentclass: article
+    fig-cap-location: bottom
+    fig-align: center
+    keep-tex: true
+    fontsize: 11pt
+    mainfont: "Arial"
+    geometry: top=1in, bottom=1in, left=0.8in, right=0.8in
+    toc-title: "Table of contents"
+---
+
+```{r setup, include=FALSE, message=FALSE, warning=FALSE}
+# Uncomment and run these lines if you haven't installed the packages:
+# install.packages("tidyverse")
+# install.packages("skimr")
+# install.packages("ggcorrplot")
+# install.packages("corrplot")
+# install.packages("ggthemes")
+# install.packages("scales")
+# install.packages("kableExtra")
+
+# Load libraries
+library(tidyverse)
+library(skimr)
+library(ggcorrplot)
+library(corrplot)
+library(ggthemes)
+library(scales)
+library(recipes)
+library(kableExtra)
+
+# Load Data (suppress column type message)
+data <- read_csv("C:/Users/togorman/Flogas Ireland/Finance - Energy Trading/LPG/01. Archive/Research/EDA Fraud Report/data.csv",
+                 show_col_types = FALSE)
+
+```
+
+\newpage
+## Introduction
+
+### Problem Statement
+
+Our company is tasked with uncovering insights from motor insurance claims data to support the early detection of fraudulent activity. Fraudulent claims lead to substantial financial losses, and existing detection methods are often inefficient or reactive. Exploratory Data Analysis (EDA) is a vital first step in identifying trends, behaviours, and risk factors that distinguish fraudulent from legitimate claims.
+
+This report presents an EDA of motor insurance claim records, focusing on behavioural, demographic, and cost-related variables. The analysis aims to uncover fraud-related patterns that can inform future model development and strengthen fraud prevention strategies.
+
+### Solution Statement
+
+This EDA followed a structured and reproducible process to extract insights from raw insurance claims data. The approach involved:
+
+1. **Data Cleaning**: Resolved inconsistencies, applied consistent formatting, and ensured data quality to enable accurate and trustworthy analysis.
+
+2. **Feature Engineering**: Created new variables to capture behavioural, demographic, and financial signals relevant to fraud detection. These additions helped generate new insights from the original data and supported deeper EDA.
+
+3. **Exploratory Visualisation**: Used targeted plots to examine relationships between the fraud flag indicator and key factors such as repair cost, geographic region, driver age, and car occupancy (e.g. number of people in the car).
+
+4. **Pattern Detection**: Identified repeated individuals, regional fraud hotspots, and cost-related anomalies to highlight subtle indicators of suspicious behaviour.
+
+5. **Insight Generation**: Delivered findings to support operational fraud prevention strategies and guide potential future predictive modelling. These insights were grounded in EDA and aimed at real-world application.
+
+Each step enhanced the dataset’s interpretability and provided a solid foundation for both practical use and future analytical work.
+
+\newpage
+## Overview of Dataset
+
+The dataset contains **1,000 motor insurance claim records**, each providing granular information on the individuals involved, the nature of the incident, and the claim outcome. Specifically, it includes:
+
+-   **Identifiable names** of drivers and passengers
+
+-   **Driver age**, included as a numeric variable
+
+-   **Residential addresses**, including street names and house numbers
+
+-   **Context of the incident**, including any passengers present
+
+-   **Claim details**, including repair costs and a fraud flag indicating whether the claim was identified as fraudulent or not fraudulent
+
+The presence of **real names and addresses** suggests that this dataset has not been anonymised, and therefore requires **ethical and responsible handling** throughout the analysis.
+
+<!--
+Attempted dynamic version using `kable`, but the output table was too wide and didn’t render properly in the PDF report.
+
+```{r sample_claims_table, eval=FALSE, echo=FALSE}
+data %>%
+  head(5) %>%
+  select(driver, age, address, passenger1, passenger2, repaircost, fraudFlag) %>%
+  knitr::kable(caption = "<span style='font-size:20px'><b>Sample of Motor Insurance Claims Data</b></span>") %>%
+  kable_styling()
+```
+-->
+
+\vspace{0.7em}
+![Overview](Overview_of_Dataset.png) *Figure 1. Sample of Motor Insurance Claims Data*
+
+\newpage
+## Data Cleaning Overview
+
+The dataset required structured cleaning to ensure consistency, accuracy, and readiness for analysis. These steps reduced noise, removed inconsistencies, and prepared the data for downstream feature engineering and modelling.
+
+-   **Renamed columns using `snake_case`**: Improves readability and coding consistency, making variable names easier to reference and manage throughout the project.
+
+-   **Standardised text fields to uppercase**: Although these fields were already capitalised in the original dataset, they were converted to uppercase programmatically to ensure consistency and reproducibility in case future datasets (e.g., Excel uploads) are not already formatted this way.
+
+-   **Cleaned the `address` column**: Removed numeric prefixes, punctuation, and extra whitespace to standardise address strings and support the creation of routing-based geographic variables.
+
+-   **Extracted `street_number`**: Separating the numeric part of addresses allows for potential spatial or sequential analysis (e.g., fraud clusters by street range).
+
+-   **Created a `routing_area` column**: Mapped address patterns — including common misspellings (e.g., “BLACATER” for “BLACKWATER”) — to their correct routing zones. This supports geographic trend analysis, which is key in fraud detection.
+
+-   **Cleaned the `repair_cost` field and converted to numeric (`repair_cost_eur`)**: Raw cost entries included symbols and inconsistent formatting (e.g. “\~1500” or “€2k”). Standardising to numeric euros allowed reliable aggregation and visualisation.
+
+-   **Enforced consistent data types**: Applied appropriate formats (e.g. factors, characters, integers) to ensure the dataset behaves predictably in analysis, visualisation, and modelling.
+
+This structured approach ensured the data was clean, consistent, and ready for analysis — helping to avoid misleading insights later in the process.
+
+```{r data-cleaning, include=FALSE, message=FALSE, warning=FALSE}
+#Rename columns using snake case
+data <- data %>%
+  rename(
+    driver = driver,
+    age = age,
+    address = address,
+    passenger_1 = passenger1,
+    passenger_2 = passenger2,
+    repair_cost = repaircost,
+    fraud_flag = fraudFlag
+  )
+
+# Standardise text columns to uppercase for consistency in detection and grouping
+data <- data %>%
+  mutate(
+    across(c(driver, address, passenger_1, passenger_2), ~ str_to_upper(.))
+  )
+
+
+# Extract the street number and reposition it left of address
+data <- data %>%
+  mutate(
+    street_number = str_extract(address, "^\\d+")
+  ) %>%
+  relocate(street_number, .before = address)
+
+
+# Clean the address column by:
+# 1. Removing leading street numbers (e.g. "23 MAIN ST" → "MAIN ST")
+# 2. Removing special characters (e.g. punctuation, symbols)
+# 3. Trimming extra whitespace to tidy spacing
+data <- data %>%
+  mutate(
+    address = address %>%
+      str_replace_all("^\\d+\\s*", "") %>%        # Remove leading street number
+      str_replace_all("[^A-Za-z0-9 ]", "") %>%    # Remove special characters
+      str_squish()                                 # Trim and fix spacing
+  )
+
+
+# Creating routing area columns (covering 20+ prefixes) & putting routing 
+# area column directly after address
+# NOTE: If new addresses are added, update these patterns to ensure correct 
+#       routing_area assignment.
+
+data <- data %>%
+  mutate(
+    routing_area = case_when(
+      str_detect(address, "SLANEY") ~ "SLANEY",
+      str_detect(address, "BARROW|BAROW") ~ "BARROW",
+      str_detect(address, "CAMAC") ~ "CAMAC",
+      str_detect(address, "BLACKWATER|BLACKATER|BLACKWAR|BLACWATER|BLACATER") ~ "BLACKWATER",
+      str_detect(address, "CORRIB|CORIB|CORRIB GRE|CORRIB VIW") ~ "CORRIB",
+      str_detect(address, "DODDER|DODD|DODER|DODR|DODXX") ~ "DODDER",
+      str_detect(address, "LIFFEY|LFEY|LFFEY|LIY|LIIFY") ~ "LIFFEY",
+      str_detect(address, "LEE") ~ "LEE",
+      str_detect(address, "BOYNE|BOYN") ~ "BOYNE",
+      str_detect(address, "SUIR") ~ "SUIR",
+      str_detect(address, "SEVERN|SERN|SEN") ~ "SEVERN",
+      str_detect(address, "SHANNON|SHANON") ~ "SHANNON",
+      str_detect(address, "THAMES|THES|TMES") ~ "THAMES",
+      str_detect(address, "BARR") ~ "BARR",
+      str_detect(address, "CAC") ~ "CAC",
+      str_detect(address, "BNE") ~ "BNE",
+      str_detect(address, "SLA|SLAY|SLEY|SLNEY") ~ "SLANEY",
+      TRUE ~ "OTHER"
+    )
+  ) %>%
+  relocate(routing_area, .after = address)
+
+
+# Clean 'repair_cost' to extract numeric euro values and fix messy entries
+data <- data %>%
+  mutate(
+    repair_cost_eur = repair_cost %>%
+      str_remove_all("approx|above|\\$|\\*|!|~") %>%  # removing junk text/symbols
+      str_trim() %>%
+      str_replace("k", "000") %>%                    # replacing 'k' with '000'
+      as.numeric()
+  ) %>%
+  relocate(repair_cost_eur, .after = repair_cost)
+
+
+# Ensure consistent and reproducible data types for all columns
+data <- data %>%
+  mutate(
+    driver = as.character(driver),
+    age = as.numeric(age),
+    street_number = as.numeric(street_number),
+    address = as.character(address),
+    routing_area = as.factor(routing_area),
+    passenger_1 = as.character(passenger_1),
+    passenger_2 = as.character(passenger_2),
+    repair_cost = as.character(repair_cost),
+    repair_cost_eur = as.numeric(repair_cost_eur),
+    fraud_flag = as.factor(fraud_flag),
+    fraud_flag_num = as.integer(fraud_flag == "TRUE")
+  )
+```
+
+A preview of the cleaned dataset is shown below.
+
+<!--
+Attempted dynamic table rendering for preview of cleaned dataset, but output did not render well in PDF due to column width issues.
+
+```{r Preview of Cleaned Dataset, eval=FALSE, echo=FALSE}
+head(data, 5) %>%
+  knitr::kable(
+    caption = "<span style='font-size:20px'><b>Preview of Cleaned Dataset</b></span>",
+    escape = FALSE
+  ) %>%
+  kableExtra::kable_styling(font_size = 13)
+```
+-->
+
+\vspace{0.7em}  
+![Preview of Cleaned Dataset](Preview_of_Cleaned_Dataset.png){width=100%}  
+*Figure 2. Preview of Cleaned Dataset*
+
+
+\newpage
+### Feature Engineering
+
+Feature engineering was used to create structured, meaningful variables that support deeper insight during the EDA process. While predictive modelling is not the focus here, these features may also prove useful in later modelling stages.
+
+-   **Binned age into `age_group`**: Created logical age bands (`under_25`, `25_to_65`, `over_65`) aligned with categories commonly used in insurance-related analysis. This transformation allows for clearer comparisons across age segments and supports non-linear analysis.
+
+-   **Created `num_passengers` and `total_in_car`**: These variables quantify vehicle occupancy, helping to assess whether the number of individuals in the car at the time of the claim is associated with fraudulent behaviour.
+
+-   **Created `carpool` flag**: A binary variable indicating whether more than one person was in the car. This simplified analysis of shared travel behaviour and its potential relationship with fraudulent claims.
+
+-   **Flagged `high_cost` claims**: Created a binary flag for claims exceeding €1,500 — a common industry threshold. This complemented the analysis of `repair_cost_eur` as a continuous variable, allowing comparisons both across cost bands and detailed distributions.
+
+- **Converted `fraud_flag` to numeric (`fraud_flag_num`)**: A new column was created to convert the original TRUE/FALSE fraud flag into a numeric format (1/0). This allowed for inclusion in correlation analysis and visual comparisons (e.g. bar charts, matrices), while keeping the original flag intact for reference.
+
+-   **Applied one-hot encoding to `routing_area`**: Converted each routing area into a separate numeric column, making it suitable for correlation analysis and easier to include in visual comparisons of fraud patterns across geographic regions.
+
+```{r feature-engineering, include=FALSE}
+# Discretising age into bins, as age effects may be non-linear. 
+# Bins align with industry-standard bands used in insurance and risk models.
+
+data <- data %>%
+  mutate(age_group = case_when(
+    age < 25 ~ "under_25",
+    age <= 65 ~ "25_to_65",
+    TRUE ~ "over_65"
+  )) %>%
+  relocate(age_group, .after = age)
+
+# Adding two new columns for passengers - number of passsengers and total in the car
+data <- data %>%
+  mutate(
+    num_passengers = case_when(
+      !is.na(passenger_1) & !is.na(passenger_2) ~ 2,
+      !is.na(passenger_1) &  is.na(passenger_2) ~ 1,
+      TRUE                                     ~ 0
+    ),
+    total_in_car = num_passengers + 1  # driver always present
+  ) %>%
+  relocate(num_passengers, total_in_car, .after = passenger_2)
+
+# Adding binary carpool flag (1 = with passengers, 0 = solo driver)
+data <- data %>%
+  mutate(carpool = ifelse(num_passengers >= 1, 1, 0)) %>%
+  relocate(carpool, .after = total_in_car)
+
+# Flag high-cost repairs (1 = repair over €1500, 0 = otherwise)
+data <- data %>%
+  mutate(high_cost = ifelse(repair_cost_eur > 1500, 1, 0)) %>%
+  relocate(high_cost, .after = repair_cost_eur)
+
+# Convert fraud_flag to numeric for correlation analysis (1 = fraud, 0 = no fraud)
+data <- data %>%
+  mutate(fraud_flag_num = ifelse(fraud_flag == "TRUE", 1, 0)) %>%
+  relocate(fraud_flag_num, .after = fraud_flag)
+
+# One-hot encode routing_area only, to investigate area-specific patterns without inflating the dataset
+recipe_obj <- recipe(fraud_flag ~ ., data = data) %>%
+  step_dummy(all_of("routing_area"), one_hot = TRUE)
+
+# Apply the recipe to get a new dataset with one-hot encoded routing_area columns
+# Apply recipe to encode routing_area
+data_encoded <- bake(prep(recipe_obj), new_data = NULL)
+```
+
+All newly engineered variables were logically integrated into the dataset with appropriate data types for analysis. A preview of the feature-engineered dataset is shown below.
+
+<!--
+Attempted dynamic table rendering for preview of feature engineered dataset, but output did not render well in PDF export.
+
+```{r Preview of Feature Engineered Dataset, eval=FALSE, echo=FALSE}
+head(data, 5) %>%
+  knitr::kable(
+    caption = "<span style='font-size:20px'><b>Preview of Feature Engineered Dataset</b></span>",
+    escape = FALSE
+  ) %>%
+  kableExtra::kable_styling(font_size = 13)
+
+```
+-->
+
+\vspace{0.7em}  
+![Preview of Feature Engineered Dataset](Preview_of_Feature_Engineered_Dataset.png){width=100%}  
+*Figure 3. Preview of Feature Engineered Dataset*
+
+\newpage
+## Exploratory Data Analysis {.unnumbered}
+
+With the cleaned and feature-enhanced dataset now in place, we conducted an Exploratory Data Analysis (EDA) to uncover meaningful patterns related to fraudulent motor insurance claims. The goal of this section is to identify potential behavioural, demographic, and geographic indicators of fraud that can inform future predictive modelling efforts.
+
+Each visual in this section is accompanied by a brief interpretation, highlighting insights that may help the company reduce financial losses and improve the early detection of suspicious claims.
+
+## Financial Overview of Fraud
+
+### Overall Financial Impact of Fraud
+
+Understanding the overall financial burden of fraudulent claims helps to prioritise early detection efforts. While fraudulent claims are less frequent, they may account for a disproportionate share of total costs, making them a critical focus for insurers.
+
+The bar chart below compares the total repair costs of non-fraudulent versus fraudulent claims.
+
+```{r total_cost_by_fraud, echo=FALSE, message=FALSE, warning=FALSE, dev="png", fig.width=7, fig.height=5, fig.align="center"}
+# Calculate total cost and % for fraud vs non-fraud
+
+# Prepare data with total and percentage labels for
+# Total Repair Cost by Fraud Status
+cost_data <- data %>%
+  group_by(fraud_flag) %>%
+  summarise(total_cost = sum(repair_cost_eur, na.rm = TRUE)) %>%
+  mutate(
+    percent = total_cost / sum(total_cost),
+    label = paste0(
+      label_number(big.mark = ",", prefix = "€")(total_cost),
+      " (", percent(percent, accuracy = 1), ")"
+    )
+  )
+
+ggplot(cost_data, aes(x = fraud_flag, y = total_cost, fill = fraud_flag)) +
+  # Main bars
+  geom_col(show.legend = FALSE) +
+  
+  # Text labels above bars
+  geom_text(aes(label = label), vjust = -0.5, size = 3.5) +
+  
+  # Invisible dummy point at 1.1x the highest bar
+  geom_blank(aes(y = max(cost_data$total_cost) * 1.1)) +
+  
+  # Format the y-axis as currency
+  scale_y_continuous(labels = label_currency(prefix = "€")) +
+  
+  # Rename factor labels + specify fill colours
+  scale_x_discrete(labels = c("FALSE" = "Non-Fraudulent Claims", "TRUE" = "Fraudulent Claims")) +
+  scale_fill_manual(values = c("FALSE" = "#2E86AB", "TRUE" = "#D64545")) +
+  
+  # Title, axis labels
+  labs(
+    title = "Total Repair Cost by Fraud Status",
+    x = "Claim Type",
+    y = "Total Repair Cost (€)"
+  ) +
+  
+  # Minimal theme plus custom tweaks
+  theme_minimal(base_size = 10) +
+  theme(
+    aspect.ratio = 0.75,                                 # slightly squish vertically
+    plot.title = element_text(hjust = 0.5, size = 13, face = "bold", margin = margin(b = 10)),
+    plot.margin = margin(15, 10, 10, 10)
+  )
+```
+
+*Figure 4. Total repair cost associated with non-fraudulent and fraudulent claims. Fraudulent claims account for just 7% of claim volume but contribute significantly to total repair costs.*
+
+Despite representing a smaller proportion of all claims, fraudulent claims account for €88,500 — or 7% — of total repair costs. In contrast, non-fraudulent claims account for the remaining 93%. Although fraud is relatively infrequent, its financial impact is substantial, and even a small number of high-cost claims can result in significant losses.
+
+\newpage
+## Correlation with Fraud
+
+Understanding how features relate to fraudulent claims helps identify strong predictors for future modelling. This section presents two distinct visualisations: one showing **correlation with the fraud flag** specifically, and another showing **correlation between all numeric features** to inform feature selection.
+
+### Correlation Strength with Fraud Flag
+
+The first chart focuses on identifying which features are most directly associated with fraudulent claims. It displays the correlation of each numeric feature with `fraud_flag_num`, where a higher value suggests a stronger linear relationship with fraud likelihood.
+
+```{r correlation_strength, echo=FALSE, warning=FALSE, message=FALSE, fig.align="center", dev="png", fig.width=7, fig.height=5}
+# Create correlation matrix
+numeric_vars <- data_encoded %>% select(where(is.numeric))
+cor_matrix <- cor(numeric_vars, use = "pairwise.complete.obs")
+
+# Extract correlation values for fraud_flag_num only
+fraud_corr <- cor_matrix[, "fraud_flag_num", drop = FALSE]
+
+# Sort correlations by absolute strength (most to least)
+fraud_corr_sorted <- fraud_corr[order(abs(fraud_corr[, 1]), decreasing = TRUE), , drop = FALSE]
+
+# Remove fraud_flag_num from the list (since it's always 1.0 with itself)
+fraud_corr_sorted <- fraud_corr_sorted[rownames(fraud_corr_sorted) != "fraud_flag_num", , drop = FALSE]
+
+# Plot: Top correlations with fraud_flag_num
+ggplot(data = as.data.frame(fraud_corr_sorted), 
+       aes(x = reorder(rownames(fraud_corr_sorted), abs(fraud_flag_num)), y = fraud_flag_num)) +
+  geom_col(fill = "#2E86AB") +  # Professional blue
+  coord_flip() +
+  ylim(-1, 1) +
+  labs(
+    title = "Correlation Strength with Fraud Flag",
+    subtitle = "Shows how strongly each variable correlates with fraud_flag_num",
+    x = "Variable",
+    y = "Correlation with Fraud"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    plot.title.position = "plot",
+    plot.title = element_text(hjust = 0.5, size = 16, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5, size = 12),
+    axis.text.y = element_text(face = "bold")
+  )
+```
+
+*Figure 5. Correlation strength between selected numeric features and the fraud flag. Stronger correlations suggest higher predictive value.*
+
+The plot highlights `total_in_car`, `num_passengers`, and `carpool` as the three variables most strongly correlated with `fraud_flag_num`, all showing weak to moderate positive correlations. This suggests that as the number of occupants in a vehicle increases, so too does the likelihood of a fraudulent claim — potentially pointing to inflated or coordinated claims involving passengers.
+
+Other positively associated variables include `repair_cost_eur` and `high_cost`, though their correlations with fraud are weaker. These results are consistent with the general expectation that more expensive repairs may be more closely scrutinised for fraud. However, as explored later in the report, the actual distribution of fraudulent claim costs reveals a more nuanced pattern — with many falling into a modest, mid-range cost band rather than the highest-cost bracket. A small number of `routing_area_*` features — such as `routing_area_SEVERN` and `routing_area_THAMES` — also show weak positive correlations, hinting at potential spatial patterns worth further investigation.
+
+`street_number`, while appearing mid-ranked in the visual, shows no meaningful correlation with `fraud_flag_num` and is likely unrelated to fraud. Its position may reflect noise rather than signal — a reminder that not all patterns are meaningful, and care must be taken to avoid being misled by randomness. Similarly, `age`, `repair_cost_eur`, and most `routing_area_*` variables show near-zero correlation and are unlikely to be strong predictors on their own.
+
+It’s worth noting that **`age` as a continuous variable shows weak linear correlation with fraud**, but this doesn’t rule out its importance. Later in the analysis, we explore age through **nonlinear groupings**, which reveal clearer fraud patterns and support the use of **banded age categories** — a common practice in insurance analytics.
+
+\newpage
+### Correlation Between All Numeric Features
+
+While the first chart focuses on how each variable relates to fraud specifically, the matrix below provides a broader overview of how all numeric variables interact with one another. This helps spot redundant variables and uncover hidden relationships — important steps in understanding the structure of the data before any future modelling.
+
+```{r correlation_matrix, echo=FALSE, warning=FALSE, message=FALSE, fig.align="left", dev="png", fig.width=14, fig.height=10}
+corrplot(cor_matrix, method = "color", type = "upper",
+         tl.col = "black", tl.cex = 1.2, 
+         number.cex = 0.85, 
+         addCoef.col = "black", 
+         col = colorRampPalette(c("red", "white", "blue"))(200))
+```
+
+*Figure 6. Correlation matrix showing relationships between all numeric variables. Darker colours and larger values indicate stronger correlations.*
+
+The correlation matrix highlights several features that are highly collinear by design (capturing similar information in different ways). For example, `total_in_car` and `num_passengers` have a correlation of 0.92, and both also strongly correlate with `carpool` (r = 0.91). These features all capture car occupancy in different forms. While this redundancy wouldn’t affect EDA, it’s worth noting for any future modelling. `carpool` may offer clearer interpretation, while `total_in_car` retains more detail.
+
+Similarly, `repair_cost_eur` and `high_cost` are closely related (r = 0.91), with the latter acting as a simplified thresholded version of the former. The choice between them depends on whether a continuous or binary view of cost is more relevant for the analysis.
+
+Most other variables — including `age`, `street_number`, and the `routing_area_*` features — show weak correlations with each other and with `fraud_flag_num`. This independence is useful in EDA, as it suggests these variables may contain distinct signals, particularly when analysed with grouping or non-linear techniques.
+
+### Summary of Correlation Insights
+
+- Car occupancy (`total_in_car`, `num_passengers`, `carpool`) and high-cost claims show the strongest associations with fraud.
+- Strong correlations between some variables (e.g. `carpool` and `total_in_car`) highlight the need for **careful variable selection** in future modelling stages.
+- Subtle but consistent spatial signals justify further exploration of **geographic patterns** in fraud.
+- These insights guide **feature selection** and help frame the next steps in the analytics process.
+
+\newpage
+## People in Car vs Fraud
+
+Understanding how the number of people in a vehicle impacts fraud likelihood can reveal behavioural patterns and inform risk profiling. This section explores the relationship between car occupancy — both as a count (`total_in_car`) and as a behaviour (`carpool`) — and the observed fraud rate.
+
+### Average Fraud Rate by Number of Occupants
+
+The bar chart in **Figure 7** illustrates the fraud rate by total number of people in the vehicle (including the driver). A clear upward trend is observed: claims involving just the driver show a fraud rate of **1%**, which rises to **11%** with two people and spikes dramatically to **61%** with three occupants.
+
+```{r People in Car vs Fraud, echo=FALSE, warning=FALSE, message=FALSE, fig.align="center", dev="png", fig.width=7, fig.height=5}
+# Bar Chart: Average Fraud Rate by Total People in Car
+data %>%
+  group_by(total_in_car) %>%
+  summarise(fraud_rate = mean(fraud_flag_num)) %>%
+  ggplot(aes(x = factor(total_in_car), y = fraud_rate)) +
+  geom_col(fill = "#2E86AB") +
+  geom_text(aes(label = percent(fraud_rate, accuracy = 1)), vjust = -0.5, size = 4.5) +
+  scale_y_continuous(labels = percent_format(), limits = c(0, NA)) +
+  labs(
+    title = "Average Fraud Rate by Total People in Car",
+    subtitle = "Percentage of fraudulent claims based on number of occupants (including driver)",
+    x = "Total in Car",
+    y = "Fraud Rate"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 16, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5, size = 12)
+  )
+```
+*Figure 7. Average fraud rate based on total number of people in the car at time of claim.*
+
+This sharp increase suggests that multi-occupant claims — especially those with three individuals — are significantly more likely to be fraudulent. This insight supports earlier correlation findings and may reflect attempts to exaggerate injury claims or fabricate witness support. `total_in_car` stands out as a particularly insightful feature for understanding fraud patterns and may hold strong potential for future modelling.
+
+\newpage
+### Carpooling and Fraud Likelihood
+
+Figure 8 explores a related but simplified version of the previous analysis, grouping drivers into two categories: those **not carpooling** (i.e., solo) and those **carpooling** (i.e., with at least one passenger). The fraud rate increases from **1%** for solo drivers to **26%** for carpooling cases.
+
+While similar to Figure 7 on `total_in_car`, this chart presents a **binary view of car occupancy** rather than exact counts. Both visuals reinforce the same pattern — that shared trips are more frequently linked with fraud — but do so at different levels of detail.
+
+```{r Carpooling vs Fraud, echo=FALSE, warning=FALSE, message=FALSE, fig.align="center", dev="png", fig.width=7, fig.height=5}
+# Bar Chart: Fraud Rate by Carpooling Status
+data %>%
+  group_by(carpool) %>%
+  summarise(fraud_rate = mean(fraud_flag_num)) %>%
+  ggplot(aes(x = factor(carpool, labels = c("Not Carpooling", "Carpooling")), y = fraud_rate, fill = factor(carpool))) +
+  geom_col() +
+  geom_text(aes(label = percent(fraud_rate, accuracy = 1)), vjust = -0.5, size = 4) +
+  scale_y_continuous(labels = percent) +
+  scale_fill_manual(values = c("0" = "#2E86AB", "1" = "#D64545")) +
+  labs(
+    title = "Fraud Rate by Carpool Status",
+    subtitle = "Comparison of fraud rates between solo and shared trips",
+    x = "Carpool Status",
+    y = "Fraud Rate",
+    fill = "Carpool"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 16, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5, size = 12),
+    legend.position = "none"
+  )
+```
+*Figure 8. Comparison of fraud rates between solo drivers and those travelling with passengers.*
+
+Although this binary breakdown lacks the nuance of `total_in_car`, it offers greater interpretability and practical value. The elevated fraud risk in carpooling cases may stem from reduced personal accountability, coordinated exaggeration of injuries, or inclusion of fictitious passengers.
+
+### Key Insights from People in Car vs Fraud
+
+- **Sharp risk gradient**: Fraud likelihood increases steeply with each additional person — especially from 2 to 3 people — suggesting a tipping point for potential collusion.
+- **Carpool flag effectiveness**: The binary `carpool` feature retains strong explanatory value and offers a clean input for segmentation or rule-based systems.
+- **Model design implication**: Both `carpool` and `total_in_car` are valuable. While collinear, they offer different advantages — `total_in_car` for richer insights, `carpool` for simplicity and speed. As seen in the correlation matrix (Figure 6), these features share a correlation of **0.91** — above the common **0.9 threshold** — suggesting that only one should be selected for future modelling to avoid confusing the model or introducing redundancy.
+
+\newpage
+## Geographic Patterns in Fraudulent Claims
+
+Understanding how fraud rates vary across different routing areas can help identify regional risk factors. Certain locations may experience elevated fraud due to factors such as local claim culture, socioeconomic conditions, or inconsistencies in claim verification processes.
+
+### Fraud Rate by Routing Area
+
+The bar chart in **Figure 9** shows the average fraud rate for each routing area. Fraud appears to be highly concentrated in a few locations. `routing_area_THAMES` has the highest fraud rate at **56%**, followed by `routing_area_SHANNON` at **40%** and `routing_area_SUIR` at **7%**. In contrast, the majority of other routing areas show very low fraud rates, often at or near **0%**.
+
+```{r Fraud Rate by Routing Area, echo=FALSE, warning=FALSE, message=FALSE, fig.align="center", dev="png", fig.width=7, fig.height=5}
+# Bar Chart: Fraud Rate by Routing Area
+data %>%
+  mutate(routing_area = str_to_title(routing_area)) %>%
+  group_by(routing_area) %>%
+  summarise(fraud_rate = mean(fraud_flag_num)) %>%
+  ggplot(aes(x = reorder(routing_area, fraud_rate), y = fraud_rate)) +
+  geom_col(fill = "#2E86AB") +
+  geom_text(aes(label = percent(fraud_rate, accuracy = 1)), hjust = -0.1, size = 4) +
+  coord_flip() +
+  scale_y_continuous(labels = percent_format(), limits = c(0, 0.7)) +  # slightly extended limit for label room
+  labs(
+    title = "Fraud Rate by Routing Area",
+    subtitle = "Average fraud rate shown for each routing area across all claims",
+    x = "Routing Area",
+    y = "Fraud Rate"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 16, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5, size = 12)
+  )
+```
+*Figure 9. Average fraud rate by routing area across all claims.*
+
+These findings suggest that a small number of geographic areas account for a disproportionate share of fraud cases. This insight may support the development of targeted fraud-prevention efforts or additional scrutiny in high-risk regions.
+
+### Fraud Rate by Routing Area and Carpooling Status
+
+To further explore regional dynamics, the chart in **Figure 10** breaks down fraud rates by routing area and `carpool` status. This split allows us to examine whether the elevated risk in some areas is amplified or explained by shared travel behaviour.
+
+```{r Faceted: Fraud Rate by Routing Area Split by Carpooling, echo=FALSE, warning=FALSE, message=FALSE, fig.align="center", dev="png", fig.width=7, fig.height=5}
+# Faceted: Fraud Rate by Routing Area Split by Carpooling
+data %>%
+  mutate(routing_area = str_to_title(routing_area)) %>%
+  group_by(routing_area, carpool) %>%
+  summarise(fraud_rate = mean(fraud_flag_num), .groups = "drop") %>%
+  ggplot(aes(x = reorder(routing_area, fraud_rate), y = fraud_rate)) +
+  geom_col(fill = "#2E86AB") +  # professional blue
+  facet_wrap(
+    ~ carpool,
+    labeller = labeller(carpool = c(`0` = "Not Carpooling", `1` = "Carpooling")),
+    strip.position = "top"
+  ) +
+  coord_flip() +
+  scale_y_continuous(labels = percent_format()) +
+  labs(
+    title = "Fraud Rate by Routing Area Split by Carpooling",
+    subtitle = "Each panel shows the average fraud rate by routing area, grouped by carpooling status",
+    x = "Routing Area",
+    y = "Fraud Rate"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    panel.spacing = unit(1, "lines"),
+    panel.border = element_rect(colour = "black", fill = NA),
+    plot.title = element_text(hjust = 0.5, size = 16, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5, size = 12)
+  )
+```
+*Figure 10. Fraud rate by routing area, split by carpooling status.*
+
+The right-hand panel (Carpooling) reveals that `routing_area_THAMES`, `SEVERN`, and `SHANNON` have significantly higher fraud rates when trips involve multiple occupants. For instance, `THAMES` shows a fraud rate of over **75%** for carpooling claims — far higher than the non-carpooling equivalent. In contrast, most routing areas with lower overall fraud see little to no difference by carpooling behaviour.
+
+This suggests that in high-risk regions, **carpooling may amplify fraud exposure**, potentially indicating coordinated or opportunistic claims involving multiple passengers. These nuanced interactions between geography and behaviour may prove valuable in building risk-aware, region-specific fraud models.
+
+### Key Insights from Geographic Patterns in Fraudulent Claims
+
+- **Fraud is geographically concentrated**: Just a few routing areas (e.g. `THAMES`, `SHANNON`) drive most of the fraudulent activity.
+- **Shared trips intensify regional risk**: Carpooling increases fraud likelihood in high-risk areas, reinforcing the need to consider behavioural context in fraud analysis.
+- **Operational value**: These findings could inform resource allocation, claim verification priorities, or the deployment of region-specific fraud detection thresholds.
+
+\newpage
+## Age-Related Insights
+
+Age can be a critical factor in understanding behavioural patterns in fraudulent claims. This section explores how age relates to fraud using a combination of histograms, fraud rate comparisons, proportional breakdowns, and cost analysis.
+
+### Distribution of Fraudulent Drivers by Age
+
+The histogram in **Figure 11** shows the age distribution of drivers involved in fraudulent claims. Most cases involve individuals aged between **25 and 40**, with visible peaks in the **25–30** and **35–40** age bands. Fewer fraud cases occur at the extremes of the age spectrum, particularly among older drivers.
+
+```{r Age Distribution of Fraudulent Drivers, echo=FALSE, warning=FALSE, message=FALSE, fig.align="center", dev="png", fig.width=7, fig.height=5}
+# Histogram: Age Distribution of Fraudulent Drivers
+data %>%
+  filter(fraud_flag == TRUE) %>%
+  ggplot(aes(x = age)) +
+  geom_histogram(binwidth = 5, fill = "#D64545", color = "black") +
+  labs(
+    title = "Age Distribution of Fraudulent Drivers",
+    subtitle = "Histogram of driver ages involved in fraudulent claims (5-year bins)",
+    x = "Age",
+    y = "Number of Fraudulent Drivers"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 16, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5, size = 12)
+  )
+```
+*Figure 11. Histogram showing number of fraudulent drivers across 5-year age bins.*
+
+This distribution suggests that fraud is most common among drivers in their **working-age years**, possibly linked to financial pressure or higher driving frequency. It highlights the need to explore not just raw counts but fraud rates relative to age group size.
+
+### Fraud Rate Within Each Age Group
+
+Figure 12 compares the **fraud rate** across three age categories: `under_25`, `25_to_65`, and `over_65` (note that these are different bins than the ones used in the previous histograms). While the `under_25` group shows the highest fraud rate (**14.7%**) *within its age bracket*, the majority of fraud costs overall are concentrated in the `25_to_65` and `over_65` groups.
+
+```{r Fraud Rate by Age Group, echo=FALSE, warning=FALSE, message=FALSE, fig.align="center", dev="png", fig.width=7, fig.height=5}
+# Bar Chart: Fraud Rate by Age Group
+age_levels <- c("under_25", "25_to_65", "over_65")
+data %>%
+  group_by(age_group) %>%
+  summarise(
+    fraud_rate = mean(fraud_flag_num),
+    total_fraud_cost = sum(repair_cost_eur[fraud_flag_num == 1], na.rm = TRUE)
+  ) %>%
+  mutate(
+    age_group = factor(age_group, levels = age_levels),
+    label = paste0(
+      round(fraud_rate * 100, 1), "% (€", format(total_fraud_cost, big.mark = ","), ")"
+    )
+  ) %>%
+  ggplot(aes(x = age_group, y = fraud_rate, fill = age_group)) +
+  geom_col() +
+  geom_text(aes(label = label), vjust = -0.5, size = 5) +
+  scale_y_continuous(labels = percent_format(), limits = c(0, 0.2)) +
+  scale_fill_manual(values = c("under_25" = "#2E86AB", "25_to_65" = "#D64545", "over_65" = "#566573")) +
+  labs(
+    title = "Fraud Rate Within Each Age Group",
+    subtitle = "The percentage of claims flagged as fraudulent within the age group. 
+    Fraudulent claim cost is shown in brackets.",
+    x = "Age Group",
+    y = "Percentage of Group Flagged as Fraudulent"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "none",
+    plot.title = element_text(hjust = 0.5, size = 16, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5, size = 12)
+  )
+```
+*Figure 12. Percentage of claims flagged as fraudulent within each age group, along with associated claim cost.*
+
+This confirms that while younger drivers are **more likely to commit fraud**, the overall **cost of fraud** is driven by the larger middle-aged group.
+
+### Contribution to Total Fraud by Age Group
+
+To understand the broader impact, Figure 13 shows each group’s contribution to total fraud cases. Although younger drivers have a higher individual fraud rate, the `25_to_65` group accounts for 78% of all fraud cases, contributing over €71,000 in flagged claims. This indicates that while the likelihood of fraud is highest within the `under_25` group (as shown in Figure 12), the majority of fraud cases and associated costs come from the `25_to_65` group.
+
+```{r Bar chart showing each age group’s contribution to total fraud cases., echo=FALSE, warning=FALSE, message=FALSE, fig.align="center", dev="png", fig.width=7, fig.height=5}
+# Base data: all levels included
+fraud_by_age <- tibble(age_group = age_levels) %>%
+  left_join(
+    data %>%
+      filter(fraud_flag == TRUE) %>%
+      group_by(age_group) %>%
+      summarise(
+        n = n(),
+        fraud_cost = sum(repair_cost_eur, na.rm = TRUE),
+        .groups = "drop"
+      ),
+    by = "age_group"
+  ) %>%
+  replace_na(list(n = 0, fraud_cost = 0)) %>%
+  mutate(
+    prop_fraud = n / sum(n),
+    label = paste0(
+      percent(prop_fraud, accuracy = 1),
+      " (€", format(fraud_cost, big.mark = ","), ")"
+    ),
+    age_group = factor(age_group, levels = age_levels)  # Apply existing levels
+  )
+
+ggplot(fraud_by_age, aes(x = age_group, y = prop_fraud, fill = age_group)) +
+  geom_col() +
+  geom_text(aes(label = label), vjust = -0.5, size = 5) +
+  scale_y_continuous(labels = percent_format(), limits = c(0, max(fraud_by_age$prop_fraud) + 0.05)) +
+  scale_fill_manual(values = c("under_25" = "#2E86AB", "25_to_65" = "#D64545", "over_65" = "#566573")) +
+  labs(
+    title = "Proportion of Total Fraud by Age Group",
+    subtitle = "Each bar shows a group's share of total fraud cases. Fraud cost shown in brackets.",
+    x = "Age Group",
+    y = "Proportion of All Fraud Cases"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "none",
+    plot.title = element_text(hjust = 0.5, size = 16, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5, size = 12)
+  )
+```
+*Figure 13. Each age group’s contribution to total fraudulent claims, with total cost in brackets.*
+
+This reinforces the importance of targeting interventions or fraud checks within the dominant `25_to_65` group, despite the risk signal in younger drivers.
+
+### Repair Costs by Age Group and Fraud Status
+
+The boxplot in **Figure 14** compares **repair costs** across age groups for both fraudulent and non-fraudulent claims. In non-fraud cases, the median and spread of repair costs appear similar across age groups. However, in fraudulent claims, the distributions are **more uniform**, with fewer outliers.
+```{r Repair Costs by Age Group Split by Fraud Flag, echo=FALSE, warning=FALSE, message=FALSE, fig.align="center", dev="png", fig.width=7, fig.height=5}
+# Boxplot: Repair Costs by Age Group Split by Fraud Flag
+ggplot(data %>% mutate(age_group = factor(age_group, levels = age_levels)),
+       aes(x = age_group, y = repair_cost_eur, fill = age_group)) +
+  geom_boxplot(outlier.shape = NA) +  # Optional: remove outliers for cleaner view
+  facet_wrap(
+    ~ fraud_flag,
+    labeller = labeller(fraud_flag = c(`FALSE` = "Not Fraud", `TRUE` = "Fraud"))
+  ) +
+  scale_fill_manual(values = c("under_25" = "#2E86AB", "25_to_65" = "#D64545", "over_65" = "#566573")) +
+  labs(
+    title = "Repair Costs by Age Group Split by Fraud Status",
+    subtitle = "Each panel compares the distribution of repair costs by age group for fraud and non-fraud claims",
+    x = "Age Group",
+    y = "Repair Cost (€)"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "none",
+    plot.title = element_text(hjust = 0.5, size = 16, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5, size = 12),
+    panel.border = element_rect(colour = "black", fill = NA),
+    panel.spacing = unit(1, "lines")
+  )
+```
+
+*Figure 14. Distribution of repair costs across age groups, split by fraud flag.*
+
+Earlier, in **Figure 5**, we observed that higher repair costs were weakly correlated with increased fraud, suggesting that more expensive repairs might warrant closer scrutiny. However, in **Figure 14**, we see a different trend: while legitimate claims show significant variability in repair costs across age groups, fraudulent claims appear **more standardised**, particularly in the `under_25` and `25_to_65` groups. Interestingly, **no fraudulent claims were observed in the over_65 group**, reinforcing earlier findings that fraud is not common in this age bracket.
+
+### Key Insights from Age-Related Insights
+
+- **Younger drivers (<25)** are more likely to commit fraud proportionally, but represent a smaller share of total fraud cost.
+- **Drivers aged 25–65** pose the **greatest operational risk**, accounting for the vast majority of fraud cases and financial impact.
+- **Older drivers (65+)** appear to present **minimal fraud risk**, with no recorded fraudulent claims in the dataset.
+- **Fraudulent repair costs** are more tightly clustered than non-fraudulent ones, which may indicate efforts to standardise or limit claims amounts.
+
+These findings offer valuable direction for segmentation strategies in fraud modelling, helping to balance proportional risk and real-world impact.
+
+\newpage
+## Repair Cost Patterns
+
+### Repair Cost Distribution by Fraud Status
+
+The boxplot in **Figure 15** compares repair costs between fraudulent and non-fraudulent claims. Interestingly, the **median repair cost for fraudulent claims is lower**, and the overall spread is narrower than in legitimate claims. This suggests that fraudulent claims are intentionally kept modest to avoid drawing attention or triggering audit thresholds. This pattern aligns with earlier findings (**Figure 12** and **Figure 13**) where fraudulent claims were found to be more prevalent among younger drivers (`under_25`), but when focusing on costs, fraud is often concealed by keeping repair expenses lower. These age-related patterns highlight the need to integrate both cost and behavior-based insights in fraud detection.
+
+```{r Repair Cost Patterns, echo=FALSE, warning=FALSE, message=FALSE, fig.align="center", dev="png", fig.width=7, fig.height=5}
+# Boxplot: Repair Cost Distribution by Fraud Status
+ggplot(data, aes(x = as.factor(fraud_flag_num), y = repair_cost_eur, fill = as.factor(fraud_flag_num))) +
+  geom_boxplot(outlier.shape = NA) +  # Optional: hide outliers for cleaner display
+  scale_fill_manual(
+    values = c("0" = "#2E86AB", "1" = "#D64545"),
+    labels = c("0" = "No Fraud", "1" = "Fraud")
+  ) +
+  scale_x_discrete(labels = c("0" = "No Fraud", "1" = "Fraud")) +
+  labs(
+    title = "Repair Cost Distribution by Fraud Status",
+    subtitle = "Comparison of repair costs for fraudulent vs. non-fraudulent claims",
+    x = "Fraud Status",
+    y = "Repair Cost (€)",
+    fill = "Fraud Flag"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "none",
+    plot.title = element_text(hjust = 0.5, size = 16, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5, size = 12)
+  )
+```
+*Figure 15. Boxplot comparing repair costs for fraud vs. non-fraud claims.*
+
+This finding suggests that fraudulent claims may often be **strategically kept below high-cost thresholds** to reduce scrutiny or bypass manual review. It complements the earlier observation that while higher repair costs can be linked to fraud, **lower-cost claims may be used to disguise intent**, underscoring the importance of combining pattern-based detection with cost considerations.
+
+\newpage
+## Repeated Names Check
+
+### Repeated Individuals Involved in Claims
+
+The bar chart in **Figure 16** highlights individuals who appear **more than three times** across claims — either as a driver or passenger. A dashed threshold at 3 appearances marks the point beyond which repetition may be considered suspicious.
+
+<!--
+Attempted visualisation of repeated individuals involved in claims, but due to layout constraints, the output may not have fit well on the page when exporting to PDF.
+
+```{r Repeated Individuals Involved in Claims, eval=FALSE, echo=FALSE, warning=FALSE, message=FALSE, fig.align="center", dev="png", fig.width=7, fig.height=5}
+# Repeated Individuals Involved in Claims
+all_names <- c(data$driver, data$passenger_1, data$passenger_2)
+all_names <- str_to_title(all_names)
+
+name_counts <- as.data.frame(table(all_names)) %>%
+  filter(all_names != "NA", Freq > 3) %>%
+  rename(Name = all_names, Count = Freq) %>%
+  arrange(desc(Count))
+
+ggplot(name_counts, aes(x = reorder(Name, Count), y = Count)) +
+  geom_col(fill = "#D64545") +  # Professional red
+  coord_flip() +
+  geom_hline(yintercept = 3, linetype = "dashed", colour = "grey30", linewidth = 1) +
+  scale_y_continuous(breaks = 0:max(name_counts$Count)) +
+  labs(
+    title = "Individuals Appearing More Than 3 Times",
+    subtitle = "Names appearing repeatedly as driver or passenger (threshold shown with dashed line)",
+    x = "Name",
+    y = "Number of Appearances"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 16, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5, size = 12),
+    axis.text.y = element_text()  
+  )
+```
+-->
+
+\vspace{0.7em}
+![Overview](Individuals_Appearing_More_Than_3_Times.png) *Figure 16. Individuals involved in more than three claims, either as drivers or passengers.*
+
+The analysis reveals multiple individuals with **four or more appearances**, including a small number with **six to nine claims**. These repeated appearances may indicate:
+
+- **Legitimate repeat claimants**, such as fleet drivers or frequent passengers, or  
+- **Potential organised fraud**, where the same individuals are repeatedly involved in suspicious claims.
+
+While further investigation would be needed to confirm intent, this pattern-based flag serves as a **strong operational trigger** for deeper review. Integrating name frequency checks into future fraud models or alert systems could support proactive fraud prevention.
+
+This pattern of repeated names adds to earlier findings about **carpooling** and **fraud hotspots**, showing that looking at how often someone appears in claims can help spot fraud — especially when combined with where the claims happen and how many people are involved.
+
+\newpage
+## Conclusion and Next Steps
+
+This exploratory data analysis uncovered several meaningful patterns that improve our understanding of fraudulent motor insurance claims and inform the design of future predictive models.
+
+### Key Findings
+
+**1. Car occupancy is a major fraud signal**  
+Features such as `total_in_car`, `num_passengers`, and `carpool` consistently showed the strongest associations with fraud. Shared trips, especially those involving three or more individuals, were linked to significantly higher fraud rates. This suggests possible collusion or fabricated injury claims.
+
+**2. Fraud isn’t always expensive**  
+While high-cost claims were moderately correlated with fraud, the boxplot analysis revealed that many fraudulent claims cluster in lower-cost ranges, with a narrower spread. This may reflect deliberate underreporting to avoid triggering audit thresholds — something cost-based detection alone might miss.
+
+**3. Fraud is geographically concentrated**  
+Areas like `THAMES`, `SHANNON`, and `SEVERN` show disproportionately high fraud rates. When combined with carpooling, these hotspots become even more pronounced — suggesting that shared-travel dynamics and regional factors together may drive coordinated fraud.
+
+**4. Age patterns matter**  
+Although drivers under 25 had the highest fraud rate within their group, the 25–65 group was responsible for the majority of fraud cases and monetary impact. Notably, no fraud was recorded among over-65s. These insights support age-informed segmentation strategies.
+
+**5. Repeated names may signal organised fraud**  
+Several individuals appeared in multiple claims — some up to six or more times. This repetition may point to organised fraud networks. While more investigation is needed, repetition-based checks could be valuable operational triggers or model inputs.
+
+### Implications and Next Steps
+
+Together, these insights demonstrate the importance of combining **behavioural**, **cost-based**, **geographic**, and **demographic** patterns in fraud analysis. Engineered features like `carpool`, `high_cost`, and `age_group` added significant value and should be included in future model pipelines.
+
+The next phase of this project involves developing and testing classification models. Emphasis will be placed on balancing model accuracy and interpretability, evaluating the predictive power of these engineered features, and ensuring any solution works in real-world claims handling to support proactive fraud detection.
+
+
+
+
+
+
